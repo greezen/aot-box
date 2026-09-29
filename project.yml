@@ -1,0 +1,10 @@
+name: aotbox
+mode: bin
+output: aotbox
+cxx-std: c++17
+
+sources:
+  - ./src
+
+ignore:
+  - ./src/gui

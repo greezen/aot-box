@@ -1,0 +1,15 @@
+name: diag
+mode: bin
+output: diag
+cxx-std: c++17
+
+sources:
+  - ./diag.php
+  - ./objc-src
+
+cxx-flags:
+  - -fobjc-arc
+
+ld-flags:
+  - -framework AppKit
+  - -framework Foundation

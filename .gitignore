@@ -1,0 +1,13 @@
+/vendor/
+/.idea/
+/.vscode/
+*.log
+.DS_Store
+/aotbox
+/aotbox-gui
+/devtool
+/devtool-gui
+/Aotbox.app/
+/DevToolbox.app/
+/build/
+.claude/
