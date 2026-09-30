@@ -6,6 +6,8 @@
 
 `aotbox-gui` 是同一套工具逻辑的 **macOS 原生 GUI**，用系统自带的 AppKit 组件（NSWindow / NSButton / NSTextField / NSTextView）构建，无需浏览器：
 
+![Aotbox 图形界面：JSON 格式化](docs/screenshot.png)
+
 ```bash
 ./aotbox-gui        # 终端里打开窗口
 ./package-app.sh     # 生成 Aotbox.app，访达里双击它

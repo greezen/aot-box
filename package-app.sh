@@ -23,46 +23,60 @@ chmod +x "${APP}/Contents/MacOS/aotbox-gui"
 ICON_SRC="$(mktemp -d)"
 cat > "${ICON_SRC}/icon.m" << 'EOF'
 #import <AppKit/AppKit.h>
-int main(void) {
+
+static NSImage *draw_icon(void) {
+    const NSSize canvas = NSMakeSize(1024, 1024);
+    return [NSImage imageWithSize:canvas flipped:NO drawingHandler:^BOOL(NSRect rect) {
+        const CGFloat pad = 36;
+        NSRect box = NSInsetRect(rect, pad, pad);
+        const CGFloat radius = box.size.width * 0.225;
+        NSBezierPath *shell = [NSBezierPath bezierPathWithRoundedRect:box xRadius:radius yRadius:radius];
+        NSGradient *gradient = [[NSGradient alloc] initWithStartingColor:[NSColor colorWithSRGBRed:0.18 green:0.45 blue:0.78 alpha:1]
+                                                              endingColor:[NSColor colorWithSRGBRed:0.06 green:0.16 blue:0.34 alpha:1]];
+        [gradient drawInBezierPath:shell angle:-90];
+        [NSGraphicsContext saveGraphicsState];
+        [shell addClip];
+        [[NSColor colorWithSRGBRed:0.98 green:0.66 blue:0.12 alpha:1] setFill];
+        NSRectFill(NSMakeRect(NSMinX(box), NSMinY(box), box.size.width, box.size.height * 0.145));
+        [NSGraphicsContext restoreGraphicsState];
+        NSFont *font = [NSFont monospacedSystemFontOfSize:300 weight:NSFontWeightBold];
+        NSDictionary *attrs = @{
+            NSFontAttributeName: font,
+            NSForegroundColorAttributeName: NSColor.whiteColor
+        };
+        NSString *mark = @"{ }";
+        NSSize textSize = [mark sizeWithAttributes:attrs];
+        [mark drawAtPoint:NSMakePoint(NSMidX(box) - textSize.width / 2.0,
+                                      NSMidY(box) - textSize.height / 2.0 + 36)
+            withAttributes:attrs];
+        return YES;
+    }];
+}
+
+int main(int argc, const char *argv[]) {
     @autoreleasepool {
-        const NSSize canvas = NSMakeSize(1024, 1024);
-        NSImage *image = [NSImage imageWithSize:canvas flipped:NO drawingHandler:^BOOL(NSRect rect) {
-            const CGFloat pad = 36;
-            NSRect box = NSInsetRect(rect, pad, pad);
-            const CGFloat radius = box.size.width * 0.225;
-            NSBezierPath *shell = [NSBezierPath bezierPathWithRoundedRect:box xRadius:radius yRadius:radius];
-            NSGradient *gradient = [[NSGradient alloc] initWithStartingColor:[NSColor colorWithSRGBRed:0.18 green:0.45 blue:0.78 alpha:1]
-                                                                  endingColor:[NSColor colorWithSRGBRed:0.06 green:0.16 blue:0.34 alpha:1]];
-            [gradient drawInBezierPath:shell angle:-90];
-            [NSGraphicsContext saveGraphicsState];
-            [shell addClip];
-            [[NSColor colorWithSRGBRed:0.98 green:0.66 blue:0.12 alpha:1] setFill];
-            NSRectFill(NSMakeRect(NSMinX(box), NSMinY(box), box.size.width, box.size.height * 0.145));
-            [NSGraphicsContext restoreGraphicsState];
-            NSFont *font = [NSFont monospacedSystemFontOfSize:300 weight:NSFontWeightBold];
-            NSDictionary *attrs = @{
-                NSFontAttributeName: font,
-                NSForegroundColorAttributeName: NSColor.whiteColor
-            };
-            NSString *mark = @"{ }";
-            NSSize textSize = [mark sizeWithAttributes:attrs];
-            [mark drawAtPoint:NSMakePoint(NSMidX(box) - textSize.width / 2.0,
-                                          NSMidY(box) - textSize.height / 2.0 + 36)
-                withAttributes:attrs];
-            return YES;
-        }];
-        CGImageRef cg = [image CGImageForProposedRect:NULL context:nil hints:nil];
-        NSBitmapImageRep *rep = [[NSBitmapImageRep alloc] initWithCGImage:cg];
-        NSData *png = [rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
-        [png writeToFile:@"/tmp/aotbox-icon-1024.png" atomically:YES];
+        [NSApplication sharedApplication];
+        if (argc < 2) {
+            return 1;
+        }
+        NSString *pngPath = [NSString stringWithUTF8String:argv[1]];
+        if (argc == 2) {
+            NSImage *image = draw_icon();
+            CGImageRef cg = [image CGImageForProposedRect:NULL context:nil hints:nil];
+            NSBitmapImageRep *rep = [[NSBitmapImageRep alloc] initWithCGImage:cg];
+            NSData *png = [rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+            [png writeToFile:pngPath atomically:YES];
+            return 0;
+        }
+        NSImage *icon = [[NSImage alloc] initWithContentsOfFile:pngPath];
+        NSString *appPath = [NSString stringWithUTF8String:argv[2]];
+        BOOL ok = [[NSWorkspace sharedWorkspace] setIcon:icon forFile:appPath options:0];
+        return ok ? 0 : 1;
     }
-    return 0;
 }
 EOF
-# The path is rewritten below; keep the write target next to the script's temp dir.
-sed -i '' "s|/tmp/aotbox-icon-1024.png|${ICON_SRC}/icon-1024.png|" "${ICON_SRC}/icon.m"
-clang -fobjc-arc -framework AppKit "${ICON_SRC}/icon.m" -o "${ICON_SRC}/icon" 
-"${ICON_SRC}/icon"
+clang -fobjc-arc -framework AppKit "${ICON_SRC}/icon.m" -o "${ICON_SRC}/icon"
+"${ICON_SRC}/icon" "${ICON_SRC}/icon-1024.png"
 
 ICONSET="${ICON_SRC}/AppIcon.iconset"
 mkdir -p "${ICONSET}"
@@ -80,7 +94,6 @@ cp "${ICONSET}/_512.png"  "${ICONSET}/icon_256x256@2x.png"
 cp "${ICONSET}/_512.png"  "${ICONSET}/icon_512x512.png"
 cp "${ICONSET}/_1024.png" "${ICONSET}/icon_512x512@2x.png"
 iconutil -c icns "${ICONSET}" -o "${APP}/Contents/Resources/AppIcon.icns"
-rm -rf "${ICON_SRC}"
 
 cat > "${APP}/Contents/Info.plist" << 'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -110,6 +123,13 @@ cat > "${APP}/Contents/Info.plist" << 'EOF'
 </dict>
 </plist>
 EOF
+
+# Seal Info.plist and AppIcon.icns first. codesign rejects a custom Finder
+# icon, so the file icon is applied after the signature.
+codesign --force --sign - "${APP}"
+"${ICON_SRC}/icon" "${ICON_SRC}/icon-1024.png" "${APP}"
+rm -rf "${ICON_SRC}"
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "${APP}" >/dev/null
 
 echo "Built: ${APP}"
 echo "Double-click Aotbox.app. Do not double-click the aotbox-gui binary."

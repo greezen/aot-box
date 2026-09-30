@@ -21,6 +21,20 @@ static php::Str to_php_string(NSString *value)
     return php::Str(utf8, std::strlen(utf8));
 }
 
+@interface ProportionalItem : NSObject
+
+@property(nonatomic, strong) NSView *frameView;
+@property(nonatomic, strong) NSView *fontView;
+@property(nonatomic) NSRect designFrame;
+@property(nonatomic) CGFloat designFontSize;
+@property(nonatomic) BOOL semibold;
+@property(nonatomic) BOOL fixedFrame;
+
+@end
+
+@implementation ProportionalItem
+@end
+
 @interface TypePHPAppKitBridge : NSObject <NSWindowDelegate>
 
 @property(nonatomic, strong) NSWindow *window;
@@ -29,9 +43,13 @@ static php::Str to_php_string(NSString *value)
 @property(nonatomic) NSInteger pendingControlId;
 @property(nonatomic) BOOL running;
 @property(nonatomic, strong) NSMutableArray<NSTextView *> *textViews;
+@property(nonatomic, strong) NSMutableArray<ProportionalItem *> *layoutItems;
+@property(nonatomic) NSSize designSize;
+@property(nonatomic, strong) id escapeMonitor;
 
 - (void)controlActivated:(NSControl *)sender;
 - (void)showFind:(id)sender;
+- (void)applyProportionalLayout;
 
 @end
 
@@ -43,6 +61,7 @@ static php::Str to_php_string(NSString *value)
     if (self != nil) {
         self.controls = [[NSMutableDictionary alloc] init];
         self.textViews = [[NSMutableArray alloc] init];
+        self.layoutItems = [[NSMutableArray alloc] init];
         self.nextControlId = 1;
     }
     return self;
@@ -57,6 +76,75 @@ static php::Str to_php_string(NSString *value)
 {
     (void) notification;
     self.running = NO;
+    if (self.escapeMonitor != nil) {
+        [NSEvent removeMonitor:self.escapeMonitor];
+        self.escapeMonitor = nil;
+    }
+}
+
+- (void)windowDidResize:(NSNotification *)notification
+{
+    (void) notification;
+    [self applyProportionalLayout];
+}
+
+- (void)applyProportionalLayout
+{
+    const NSSize current = self.window.contentView.bounds.size;
+    const CGFloat designWidth = self.designSize.width;
+    const CGFloat designHeight = self.designSize.height;
+    if (designWidth < 1.0 || designHeight < 1.0 || current.width < 1.0 || current.height < 1.0) {
+        return;
+    }
+    // Sidebar controls stay at their design size and stick to the top.
+    // The content column keeps a fixed left edge and absorbs the extra width.
+    CGFloat sidebarRight = 0;
+    CGFloat designContentRight = 0;
+    for (ProportionalItem *item in self.layoutItems) {
+        if (item.fixedFrame) {
+            sidebarRight = MAX(sidebarRight, NSMaxX(item.designFrame));
+        } else {
+            designContentRight = MAX(designContentRight, NSMaxX(item.designFrame));
+        }
+    }
+    const CGFloat contentGap = 20.0;
+    const CGFloat contentOriginX = sidebarRight > 0 ? sidebarRight + contentGap : 0;
+    const CGFloat rightMargin = MAX(0.0, designWidth - designContentRight);
+    const CGFloat designContentWidth = MAX(1.0, designWidth - contentOriginX - rightMargin);
+    const CGFloat scaleX = MAX(1.0, current.width - contentOriginX - rightMargin) / designContentWidth;
+    const CGFloat scaleY = current.height / designHeight;
+    for (ProportionalItem *item in self.layoutItems) {
+        const NSRect design = item.designFrame;
+        if (item.fixedFrame) {
+            const CGFloat topInset = designHeight - NSMaxY(design);
+            item.frameView.frame = NSMakeRect(design.origin.x,
+                                               current.height - topInset - design.size.height,
+                                               design.size.width,
+                                               design.size.height);
+        } else {
+            const CGFloat xInContent = design.origin.x - contentOriginX;
+            item.frameView.frame = NSMakeRect(contentOriginX + xInContent * scaleX,
+                                               design.origin.y * scaleY,
+                                               design.size.width * scaleX,
+                                               design.size.height * scaleY);
+        }
+        const CGFloat fontScale = item.fixedFrame ? 1.0 : scaleY;
+        const CGFloat fontSize = MAX(1.0, item.designFontSize * fontScale);
+        NSFont *font = item.semibold
+                           ? [NSFont systemFontOfSize:fontSize weight:NSFontWeightSemibold]
+                           : [NSFont systemFontOfSize:fontSize];
+        if ([item.fontView isKindOfClass:NSTextView.class]) {
+            NSTextView *textView = (NSTextView *)item.fontView;
+            textView.font = font;
+            if (textView.string.length > 0) {
+                [textView.textStorage addAttribute:NSFontAttributeName
+                                             value:font
+                                             range:NSMakeRange(0, textView.string.length)];
+            }
+        } else if ([item.fontView isKindOfClass:NSControl.class]) {
+            ((NSControl *)item.fontView).font = font;
+        }
+    }
 }
 
 - (NSTextView *)textViewForFind
@@ -167,6 +255,20 @@ static NSView *control_by_id(php::Int controlId)
     return bridge.controls[@(static_cast<NSInteger>(controlId))];
 }
 
+static void remember_layout(NSView *frameView, NSView *fontView, CGFloat fontSize, BOOL semibold)
+{
+    ProportionalItem *item = [[ProportionalItem alloc] init];
+    item.frameView = frameView;
+    item.fontView = fontView;
+    item.designFrame = frameView.frame;
+    item.designFontSize = fontSize;
+    item.semibold = semibold;
+    // Tool buttons live in the left column. Content starts further right.
+    item.fixedFrame = NSMaxX(frameView.frame) <= 210.0;
+    frameView.autoresizingMask = NSViewNotSizable;
+    [bridge.layoutItems addObject:item];
+}
+
 static NSImage *make_app_icon(void)
 {
     const NSSize canvas = NSMakeSize(512, 512);
@@ -228,7 +330,22 @@ void php_ui_create_window(php::Str title, php::Int width, php::Int height)
         bridge.window.delegate = bridge;
         bridge.window.title = to_ns_string(title);
         bridge.window.minSize = NSMakeSize(640, 480);
+        bridge.designSize = NSMakeSize(static_cast<CGFloat>(width), static_cast<CGFloat>(height));
         [bridge.window center];
+        bridge.escapeMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown
+                                                                      handler:^NSEvent * _Nullable(NSEvent *event) {
+            if (event.window != bridge.window) {
+                return event;
+            }
+            NSString *chars = event.charactersIgnoringModifiers;
+            if (chars.length == 1 && [chars characterAtIndex:0] == 27) {
+                // Hide the app the way WeChat does: the window leaves the screen,
+                // the Dock icon stays, and clicking that icon brings the window back.
+                [NSApp hide:nil];
+                return nil;
+            }
+            return event;
+        }];
     }
 }
 
@@ -254,6 +371,7 @@ php::Int php_ui_add_label(
                          : [NSFont systemFontOfSize:static_cast<CGFloat>(fontSize)];
         label.textColor = bold ? NSColor.labelColor : NSColor.secondaryLabelColor;
         [bridge.window.contentView addSubview:label];
+        remember_layout(label, label, static_cast<CGFloat>(fontSize), static_cast<BOOL>(bold));
         return static_cast<php::Int>(store_control(label));
     }
 }
@@ -283,6 +401,7 @@ php::Int php_ui_add_button(
             button.keyEquivalent = @"\r";
         }
         [bridge.window.contentView addSubview:button];
+        remember_layout(button, button, 13.0, NO);
         return static_cast<php::Int>(store_control(button));
     }
 }
@@ -307,6 +426,7 @@ php::Int php_ui_add_text_field(
         field.editable = YES;
         field.selectable = YES;
         [bridge.window.contentView addSubview:field];
+        remember_layout(field, field, 13.0, NO);
         return static_cast<php::Int>(store_control(field));
     }
 }
@@ -326,7 +446,7 @@ php::Int php_ui_add_text_view(
             static_cast<CGFloat>(height))];
         scroll.hasVerticalScroller = YES;
         scroll.borderType = NSBezelBorder;
-        scroll.autoresizingMask = NSViewWidthSizable;
+        scroll.autoresizingMask = NSViewNotSizable;
 
         const NSSize contentSize = scroll.contentSize;
         NSTextView *tv = [[NSTextView alloc] initWithFrame:NSMakeRect(0, 0, contentSize.width, contentSize.height)];
@@ -346,6 +466,7 @@ php::Int php_ui_add_text_view(
 
         [scroll setDocumentView:tv];
         [bridge.window.contentView addSubview:scroll];
+        remember_layout(scroll, tv, 13.0, NO);
         return static_cast<php::Int>(store_control(tv));
     }
 }
